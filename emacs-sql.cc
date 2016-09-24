@@ -3,29 +3,41 @@
 #include "sqlite.hpp"
 
 extern "C" {
-  #include <emacs-module.h>
+#include <emacs-module.h>
 }
 
 emacs_value create_list(emacs_env* env, std::vector<std::string> row);
 
 
 int plugin_is_GPL_compatible;
-static SQLiteConnection connection;
 
-emacs_value execute_query(emacs_env* env, std::string query){
+/* store instances of SQLiteConnection on connection 
+
+   queries find the appropriate instance and use the associated sqlite3*
+*/
+static connection_map_t current_connections;
+
+
+emacs_value signal_error(emacs_env* env, std::string msg){
+  emacs_value error = env->make_string(env, msg.c_str(), msg.size());
+  return env->funcall(env, env->intern(env, "error"), 1, &error);
+}
+
+
+emacs_value execute_query(emacs_env* env, std::string query, SQLiteConnection* connection){
   try{
-    SQLiteQuery q(query);
+    SQLiteQuery q(query, connection);
     std::vector<row_t> data = q.data();
     emacs_value rows[data.size()];
     for(unsigned int i = 0; i < data.size(); i++){
       rows[i] = create_list(env, data[i]);
     }
-    emacs_value response = env->funcall(env, env->intern(env, "list"), data.size(), rows); /* list to store response */
+    emacs_value response = env->funcall(env, env->intern(env, "list"), data.size(), rows);
     return response;
   }
   catch(const SQLException& e){
     std::string msg = e.what();
-    return env->make_string(env, msg.c_str(), msg.size());
+    return signal_error(env, msg);
   }
 }
 
@@ -41,22 +53,65 @@ emacs_value create_list(emacs_env* env, std::vector<std::string> row){
 }
 
 static emacs_value
+Fsqlite_disconnect(emacs_env* env, ptrdiff_t nargs, emacs_value args[], void * data){
+  char buffer[256];
+  ptrdiff_t size = 256;
+  if(env->copy_string_contents(env, args[0], buffer, &size)){
+    std::string connection_name = buffer;
+    auto it = current_connections.find(connection_name);
+    if(it == current_connections.end()){
+      return signal_error(env, "No matching connection to disconnect");
+    }
+    else{
+      /* clean up resources and remove from connections map */
+      SQLiteConnection* conn = it->second;
+      delete conn;
+      current_connections.erase(it);
+      return env->intern(env, "t");
+    }
+  }
+  else{
+    return signal_error(env, "Invalid argument");
+  }
+}
+
+static emacs_value
+Fsqlite_connections(emacs_env *env, ptrdiff_t nargs, emacs_value args[], void * data){
+  std::vector<std::string> connections;
+  for(const auto& it: current_connections){
+    connections.push_back(it.first);
+  }
+  return create_list(env, connections);
+}
+
+static emacs_value
 Fsqlite_connect(emacs_env *env, ptrdiff_t nargs, emacs_value args[], void * data){
   char buffer[256];
   ptrdiff_t size = 256;
   if(env->copy_string_contents(env, args[0], buffer, &size)){
     try{
-      connection.open(buffer);
-      return env->intern(env, "t");
+      std::string connection_name = buffer;
+
+      auto it = current_connections.find(connection_name);
+
+      if(it != current_connections.end()){
+	return signal_error(env, "Connection already exists");
+      }
+      else{
+	SQLiteConnection* connection = new SQLiteConnection;
+	connection->open(buffer);
+	current_connections[buffer] = connection;
+	return env->intern(env, "t");
+      }
     }
     catch(const SQLException& e){
       std::string msg = e.what();
-      return env->make_string(env, msg.c_str(), msg.size());
+      return signal_error(env, msg);
     }
   }
   else{
     std::string msg = "Invalid argument";
-    return env->make_string(env, msg.c_str(), msg.size());
+    return signal_error(env, msg);
   }
 
 }
@@ -81,76 +136,28 @@ Fsqlite_query(emacs_env *env, ptrdiff_t nargs, emacs_value args[], void * data){
   }
 
   std::string query;
-  if(arguments.size() == 1){
-    query = arguments[0];
+  SQLiteConnection* connection;
+  try{
+    auto it = current_connections.find(arguments[0]);
+    if(it == current_connections.end()){
+      std::string msg = "Connection not found: " + arguments[0];
+      return signal_error(env, msg);
+    }
+    else{
+      connection = it->second;
+      query = arguments[1];
+    }
+      
   }
-
-  else if(arguments.size() == 2){
-    try{
-      connection.open(arguments[0]);
-    }
-    catch(const SQLException& e){
-      std::string msg = e.what();
-      return env->make_string(env, msg.c_str(), msg.size());
-    }
-    query = arguments[1];
+  catch(const SQLException& e){
+    std::string msg = e.what();
+    return signal_error(env, msg);
   }
   
-  return execute_query(env, query);
+  return execute_query(env, query, connection);
 
-  /*
-  if(env->copy_string_contents(env, args[0], buffer, &size)){
-    std::string query = std::string(buffer);
-    
-    try {
-      SQLiteConnection connection("default.sqlite");
-      SQLiteQuery* q = new SQLiteQuery(std::string(buffer));
-      std::vector<row_t> rows = q->data();
-      delete q;
-  
-      emacs_value row_data[rows.size()];
-      for(unsigned int i = 0; i < rows.size(); i++){
-	row_data[i] = create_list(env, rows[i]);
-      }
-
-      if(rows.size() == 0) return env->intern(env, "nil");
-      emacs_value query_result = env->funcall(env, env->intern(env, "list"), rows.size(), row_data);
-      return query_result;;
-    }
-    catch(SQLException& e){
-      std::string msg = e.what();
-      return env->make_string(env, msg.c_str(), msg.size());
-    }
-  }
-  else {
-    return env->intern(env, "nil");
-  }
-  */
 }
 
-  /* 
-  
-
-  try{
-    SQLiteQuery* q = new SQLiteQuery(std::string(buffer));
-    std::vector<row_t> rows = q->data();
-    delete q;
-  
-    emacs_value row_data[rows.size()];
-    for(unsigned int i = 0; i < rows.size(); i++){
-      row_data[i] = create_list(env, rows[i]);
-    }
-
-    if(rows.size() == 0) return env->intern(env, "nil");
-    emacs_value query_result = env->funcall(env, env->intern(env, "list"), rows.size(), row_data);
-    return query_result;;
-  }
-  catch(SQLException& e){
-    std::string msg = e.what();
-    return env->make_string(env, msg.c_str(), msg.size());
-  }
-	
-*/  
 static void
 bind_function (emacs_env *env, const char* name, emacs_value Sfun){
   /* Convert the strings to symbols by interning them */
@@ -179,33 +186,47 @@ provide (emacs_env *env, const char *feature)
 
 
 extern "C"{
-int
-emacs_module_init (struct emacs_runtime *ert)
-{
-  emacs_env *env = ert->get_environment (ert);
+  int
+  emacs_module_init (struct emacs_runtime *ert)
+  {
+    emacs_env *env = ert->get_environment (ert);
 				       
-  /* create a lambda (returns an emacs_value) */
-  emacs_value sqlite_connect = env->make_function (env,
-						   1,            /* min. number of arguments */
-						   1,            /* max. number of arguments */
-						   Fsqlite_connect,  /* actual function pointer */
-						   "Specify SQLite database file to connect to.",        /* docstring */
+    /* create a lambda (returns an emacs_value) */
+    emacs_value sqlite_connect = env->make_function (env,
+						     1,            /* min. number of arguments */
+						     1,            /* max. number of arguments */
+						     Fsqlite_connect,  /* actual function pointer */
+						     "Specify SQLite database file to connect to.",        /* docstring */
+						     NULL          /* user pointer of your choice (data param in Fmymod_test) */
+						     );
+    /* create a lambda (returns an emacs_value) */
+    emacs_value sqlite_query = env->make_function (env,
+						   2,            /* min. number of arguments */
+						   2,            /* max. number of arguments */
+						   Fsqlite_query,  /* actual function pointer */
+						   "Execute SQLite query on preset connection",        /* docstring */
 						   NULL          /* user pointer of your choice (data param in Fmymod_test) */
 						   );
-  /* create a lambda (returns an emacs_value) */
-  emacs_value sqlite_query = env->make_function (env,
-					      1,            /* min. number of arguments */
-					      2,            /* max. number of arguments */
-					      Fsqlite_query,  /* actual function pointer */
-					      "Execute SQLite query on preset connection",        /* docstring */
-					      NULL          /* user pointer of your choice (data param in Fmymod_test) */
-					);
-				       
-  bind_function(env, "sqlite-query", sqlite_query);
-  bind_function(env, "sqlite-connect", sqlite_connect);
-  provide (env, "emacs-sql");
 
-  /* loaded successfully */
-  return 0;
-}
+    /* create a lambda (returns an emacs_value) */
+    emacs_value sqlite_disconnect = env->make_function(env, 1, 1, Fsqlite_disconnect, "Disconnect from SQLite file", NULL);
+    
+    emacs_value sqlite_connections = env->make_function (env,
+						   0,            /* min. number of arguments */
+						   0,            /* max. number of arguments */
+						   Fsqlite_connections,  /* actual function pointer */
+						   "Execute SQLite query on preset connection",        /* docstring */
+						   NULL          /* user pointer of your choice (data param in Fmymod_test) */
+						   );
+				       
+    bind_function(env, "sqlite-query", sqlite_query);
+    bind_function(env, "sqlite-connect", sqlite_connect);
+    bind_function(env, "sqlite-disconnect", sqlite_disconnect);
+    bind_function(env, "sqlite-connections", sqlite_connections);
+    
+    provide (env, "emacs-sql");
+
+    /* loaded successfully */
+    return 0;
+  }
 }

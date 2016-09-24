@@ -3,17 +3,19 @@
 #include <exception>
 
 
-sqlite3* SQLiteConnection::_connection = nullptr;
-
 SQLiteConnection::SQLiteConnection(){
+  _connection = nullptr;
 }
 
 SQLiteConnection::~SQLiteConnection(){
+  if(_connection != nullptr){
+    sqlite3_close(_connection);
+  }
 }
 
 SQLiteConnection::SQLiteConnection(const std::string& file){
   if(_connection != nullptr){
-    throw SQLException("Connection already open");
+    throw SQLException("Unexpected: Connection already open");
   }
   open(file);
 }
@@ -38,17 +40,24 @@ void SQLiteConnection::close(){
 }
 
 SQLiteQuery::SQLiteQuery(){
-  if(SQLiteConnection::get_instance() == nullptr){
-    throw SQLException("No connection available");
+}
+
+SQLiteQuery::SQLiteQuery(const std::string& query, const SQLiteConnection* connection){
+  if(!connection->is_connected()) 
+    throw SQLException("Invalid connection object");
+  else{
+    _connection = connection->_connection;
+    execute(query);
   }
 }
 
-
-SQLiteQuery::SQLiteQuery(std::string query){
-  if((_connection = SQLiteConnection::get_instance()) == nullptr){
-    throw SQLException("No connection available");
+void SQLiteQuery::execute(const std::string& query){
+  if(_connection == nullptr){
+    throw SQLException("No connection to execute query");
   }
-
+  else if(query == ""){
+    throw SQLException("Cannot execute empty query");
+  }
   sqlite3_stmt* statement;
   int code = sqlite3_prepare_v2(_connection, query.c_str(), query.size(), &statement, 0);
   if(code != SQLITE_OK){

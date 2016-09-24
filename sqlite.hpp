@@ -5,8 +5,11 @@
 #include <vector>
 #include <sqlite3.h>
 #include <string>
+#include <map>
 
-
+class SQLiteConnection;
+class SQLiteQuery;
+typedef std::map<std::string, SQLiteConnection*> connection_map_t;
 typedef std::vector<std::string> row_t;
 
 class SQLException: public std::exception{
@@ -23,14 +26,18 @@ public:
 
 class SQLiteConnection{
 private:
-  static sqlite3* _connection;
+  friend SQLiteQuery;
+  /* if connection not explicitly given, store the most recently created */
+  static sqlite3* _recent_connection;
+  sqlite3* _connection;
 public:
   SQLiteConnection(const std::string& file);
   SQLiteConnection();
   ~SQLiteConnection();
 
-  static sqlite3* get_instance(){ return _connection; };
-  bool is_connected(){ return _connection != nullptr; }
+  static sqlite3* get_newest(){ return _recent_connection; }
+  sqlite3* get_instance() { return _connection; };
+  bool is_connected() const { return _connection != nullptr; }
 
   void open(const std::string& fp);
   void close();
@@ -43,8 +50,10 @@ private:
   
 public:
   SQLiteQuery();
-  SQLiteQuery(std::string query);
+  SQLiteQuery(const std::string& query_str, const SQLiteConnection* connection);
   ~SQLiteQuery();
+
+  void execute(const std::string& query);
 
   std::vector<row_t> data(){ return query_data; }
 };
