@@ -71,8 +71,13 @@ void SQLiteQuery::execute(const std::string& query){
       row_t row;
       row.reserve(columns);
       for(int i = 0; i < columns; i++){
-	std::string value = reinterpret_cast<const char*>(sqlite3_column_text(statement, i));
-	row.push_back(value);
+	int bytes = sqlite3_column_bytes(statement, i);
+	if(bytes > 0){
+	  std::string value = reinterpret_cast<const char*>(sqlite3_column_text(statement, i));
+	  row.push_back(value);
+	}
+	else
+	  row.push_back("");
       }
       if(row.size() > 0) query_data.push_back(row);
     }
