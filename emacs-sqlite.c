@@ -49,7 +49,7 @@ Fsqlite_prepare(emacs_env *env, ptrdiff_t nargs, emacs_value args[], void * data
     const char *message = sqlite3_errstr(result);
     emacs_value exit_data = env->make_string(env, message, strlen(message));
     env->non_local_exit_signal(env, symbol, exit_data);
-    return env->intern(env, "nil");
+    return env->funcall(env, symbol, 1, &exit_data);
   }
   else{
     emacs_value e_statement = env->make_user_ptr(env, Fstatement_fin, statement);
