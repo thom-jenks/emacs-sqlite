@@ -2,8 +2,61 @@
 #include <string.h>
 #include <sqlite3.h>
 #include "emacs-module.h"
+#include "emacs-symbols.h"
+#include "emacs-housekeeping.h"
 
 int plugin_is_GPL_compatible;
+
+static void
+Fstatement_fin(void* data){
+  sqlite3_finalize(data);
+}
+
+
+static emacs_value
+Fsqlite_step(emacs_env *env, ptrdiff_t nargs, emacs_value args[], void * data){
+  sqlite3_stmt* statement = env->get_user_ptr(env, args[0]);
+ 
+  int result = sqlite3_step(statement);
+  return env->make_integer(env, result);
+}
+
+/* Prepare SQL statement */
+static emacs_value
+Fsqlite_prepare(emacs_env *env, ptrdiff_t nargs, emacs_value args[], void * data){
+  (void)data;
+  (void)nargs;
+  
+  sqlite3* db = env->get_user_ptr(env, args[0]);
+
+  
+  ptrdiff_t size = 0;
+  env->copy_string_contents(env, args[1], NULL, &size);
+  if(env->non_local_exit_check(env) != emacs_funcall_exit_return){
+    return env->intern(env, "nil");
+  }
+
+  char* sql_str = malloc(size*sizeof(char));
+  env->copy_string_contents(env, args[1], sql_str, &size);
+
+  
+  sqlite3_stmt* statement;
+  int result = sqlite3_prepare_v2(db, sql_str, size, &statement, NULL);
+  free(sql_str);
+  if(result != SQLITE_OK){
+    /* Error */
+    emacs_value symbol = env->intern(env, "error");
+    const char *message = sqlite3_errstr(result);
+    emacs_value exit_data = env->make_string(env, message, strlen(message));
+    env->non_local_exit_signal(env, symbol, exit_data);
+    return env->intern(env, "nil");
+  }
+  else{
+    emacs_value e_statement = env->make_user_ptr(env, Fstatement_fin, statement);
+    return e_statement;
+  }
+  
+}
 
 
 /* Close db */
@@ -83,54 +136,13 @@ Fsqlite_open(emacs_env *env, ptrdiff_t nargs, emacs_value args[], void * data){
 }
 
 
-/* create symbols with values */
-static void
-bind_value (emacs_env *env, const char* name, emacs_value Svar){
-  emacs_value Qsym = env->intern (env, name);
-  emacs_value Qset = env->intern (env, "set");
-  emacs_value args[] = { Qsym, Svar };
-
-  env->funcall (env, Qset, 2, args);
-}
-
-static void
-bind_function (emacs_env *env, const char* name, emacs_value Sfun){
-  /* Convert the strings to symbols by interning them */
-  emacs_value Qfset = env->intern (env, "fset");
-  emacs_value Qsym = env->intern (env, name);
-
-  /* Prepare the arguments array */
-  emacs_value args[] = { Qsym, Sfun };
-
-  /* Make the call (2 == nb of arguments) */
-  env->funcall (env, Qfset, 2, args);
-}
-
-/* Provide FEATURE to Emacs.  */
-static void
-provide (emacs_env *env, const char *feature)
-{
-  /* call 'provide' with FEATURE converted to a symbol */
-
-  emacs_value Qfeat = env->intern (env, feature);
-  emacs_value Qprovide = env->intern (env, "provide");
-  emacs_value args[] = { Qfeat };
-
-  env->funcall (env, Qprovide, 1, args);
-}
 
 int
 emacs_module_init (struct emacs_runtime *ert)
 {
   emacs_env *env = ert->get_environment (ert);
 
-  /* internalise open permissions */
-  emacs_value sqlite_open_ro = env->make_integer(env, SQLITE_OPEN_READONLY);
-  bind_value(env, "SQLITE_OPEN_READONLY", sqlite_open_ro);
-  emacs_value sqlite_open_rw = env->make_integer(env, SQLITE_OPEN_READWRITE);
-  bind_value(env, "SQLITE_OPEN_READWRITE", sqlite_open_rw);
-  emacs_value sqlite_open_create = env->make_integer(env, SQLITE_OPEN_CREATE);
-  bind_value(env, "SQLITE_OPEN_CREATE", sqlite_open_create);
+  export_symbols(env);
 
   const char* open_docstr = "Open SQLite3 DB file\nArguments: db_path permissions...\n"\
     "permissions are ORed together.";
@@ -140,6 +152,14 @@ emacs_module_init (struct emacs_runtime *ert)
   const char* close_docstr = "Close existing DB connection";
   emacs_value sqlite_close = env->make_function(env, 1, 1, Fsqlite_close, close_docstr, NULL);
   bind_function(env, "sqlite3-close", sqlite_close);
+
+  const char* prepare_docstr = "Prepare SQL statement for execution";
+  emacs_value sqlite_prepare = env->make_function(env, 2, 2, Fsqlite_prepare, prepare_docstr, NULL);
+  bind_function(env, "sqlite3-prepare", sqlite_prepare);
+
+  const char* step_docstr = "Step through execution of prepared SQL statement";
+  emacs_value sqlite_step = env->make_function(env, 1, 1, Fsqlite_step, step_docstr, NULL);
+  bind_function(env, "sqlite3-step", sqlite_step);
 
   provide (env, "emacs-sqlite");
 
