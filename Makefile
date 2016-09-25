@@ -1,11 +1,11 @@
-CC = g++
+CC = gcc
 CFLAGS = -g -Wall
 ROOT=/home/thom/emacs
 
-all: emacs-sql.so
+all: emacs-sqlite.so
 
-emacs-sql.so: emacs-sql.o sqlite.o
-	$(CC) -shared -o $@ $< sqlite.o -lsqlite3
+%.so: %.o
+	$(CC) -shared -o $@ $< -lsqlite3
 
-%.o: %.cc
+%.o: %.c
 	$(CC) $(CFLAGS) -I$(ROOT)/src -fPIC -c $<
