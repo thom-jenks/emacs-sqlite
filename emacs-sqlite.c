@@ -5,24 +5,33 @@
 
 int plugin_is_GPL_compatible;
 
-static void
-get_int_list(emacs_env* env, emacs_value elist, int* clist, int* len){
-  //emacs_value type = env->type_of(env, elist);
-  /* TODO: error if type is not list */
 
-  if((*len) == 0){
-    emacs_value length = env->funcall(env, env->intern(env, "length"), 1, &elist);
-    (*len) = env->extract_integer(env, length);
-    return;
+/* Close db */
+static emacs_value
+Fsqlite_close(emacs_env *env, ptrdiff_t nargs, emacs_value args[], void * data){
+  (void)nargs;
+  (void)data;
+
+  sqlite3* db = env->get_user_ptr(env, args[0]);
+
+  int result = sqlite3_close_v2(db);
+  if(result == SQLITE_OK){
+    return env->intern(env, "t");
   }
-  else{
-    int i;
-    for(i = 0; i < *len; i++){
-      emacs_value args[] = { env->make_integer(env, 2), elist };
-      emacs_value val = env->funcall(env, env->intern(env, "nth"), 2, args);
-      clist[i] = env->extract_integer(env, val);
-    }
+  else if(result == SQLITE_BUSY){
+    /* Signal the error message. */
+    emacs_value symbol = env->intern(env, "error");
+    const char *message = "Database is currently busy";
+    emacs_value data = env->make_string(env, message, strlen(message));
+    env->non_local_exit_signal(env, symbol, data);
+    return env->intern(env, "f");
   }
+  emacs_value symbol = env->intern(env, "error");
+  const char *message = "Unexpected error - unknown state.";
+  emacs_value exit_data = env->make_string(env, message, strlen(message));
+  env->non_local_exit_signal(env, symbol, exit_data);
+
+  return env->intern(env, "f");
 }
 
 static void
@@ -36,7 +45,7 @@ Fsqlite_open(emacs_env *env, ptrdiff_t nargs, emacs_value args[], void * data){
   /* Silence unused variable warnings */
   (void)nargs;
   (void)data;
-  
+
   ptrdiff_t size = 0;
   /* Get length of arg zero */
   env->copy_string_contents(env, args[0], NULL, &size);
@@ -46,22 +55,15 @@ Fsqlite_open(emacs_env *env, ptrdiff_t nargs, emacs_value args[], void * data){
 
   char* db_name = malloc(size*sizeof(char));
   env->copy_string_contents(env, args[0], db_name, &size);
-  
+
   int sqlite_flags = 0;
-  if(nargs > 1){
-    int permissions_len = 0;
-    get_int_list(env, args[1], NULL, &permissions_len);
-    int* permissions_list = malloc(permissions_len*sizeof(int));
-    int i = 0;
-    for(i = 0; i < permissions_len; i++){
-      sqlite_flags |= permissions_list[i];
-    }
-    free(permissions_list);
+
+  if(nargs == 2){
+    sqlite_flags = env->extract_integer(env, args[1]);
   }
   else{
     sqlite_flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
   }
-  
 
   sqlite3* db;
   int result = sqlite3_open_v2(db_name, &db, sqlite_flags, NULL);
@@ -74,9 +76,9 @@ Fsqlite_open(emacs_env *env, ptrdiff_t nargs, emacs_value args[], void * data){
     /* Signal the error message. */
     emacs_value symbol = env->intern(env, "error");
     const char *message = sqlite3_errstr(result);
-    emacs_value data = env->make_string(env, message, strlen(message));
-    env->non_local_exit_signal(env, symbol, data);
-    return env->intern(env, "nil"); 
+    emacs_value exit_data = env->make_string(env, message, strlen(message));
+    env->non_local_exit_signal(env, symbol, exit_data);
+    return env->intern(env, "nil");
   }
 }
 
@@ -129,10 +131,16 @@ emacs_module_init (struct emacs_runtime *ert)
   bind_value(env, "SQLITE_OPEN_READWRITE", sqlite_open_rw);
   emacs_value sqlite_open_create = env->make_integer(env, SQLITE_OPEN_CREATE);
   bind_value(env, "SQLITE_OPEN_CREATE", sqlite_open_create);
-  
-  emacs_value sqlite_open = env->make_function(env, 1, 2, Fsqlite_open, "Open sqlite3 db file", NULL);
+
+  const char* open_docstr = "Open SQLite3 DB file\nArguments: db_path permissions...\n"\
+    "permissions are ORed together.";
+  emacs_value sqlite_open = env->make_function(env, 1, 2, Fsqlite_open, open_docstr, NULL);
   bind_function(env, "sqlite3-open", sqlite_open);
- 
+
+  const char* close_docstr = "Close existing DB connection";
+  emacs_value sqlite_close = env->make_function(env, 1, 1, Fsqlite_close, close_docstr, NULL);
+  bind_function(env, "sqlite3-close", sqlite_close);
+
   provide (env, "emacs-sqlite");
 
 
